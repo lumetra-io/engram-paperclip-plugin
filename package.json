@@ -1,6 +1,6 @@
 {
   "name": "@lumetra/engram-paperclip-plugin",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Engram durable memory for Paperclip agents — store and recall facts across heartbeats, runs, and companies.",
   "license": "MIT",
   "author": "Lumetra <hello@lumetra.io>",

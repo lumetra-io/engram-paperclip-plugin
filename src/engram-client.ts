@@ -15,11 +15,25 @@ export interface StoredMemory {
   merge_reason?: string;
 }
 
+export interface QueryRetrievedMemory {
+  memory_id: string;
+  bucket_name: string;
+  content: string;
+  raw_score?: number;
+  weighted_score?: number;
+}
+
 export interface QueryResponse {
-  query: string;
-  buckets: string[];
-  result?: string;
-  sources?: Array<{ id: string; bucket: string; content: string; score?: number }>;
+  success?: boolean;
+  /** Synthesized natural-language answer over the retrieved memories. */
+  answer?: string;
+  memories_found?: number;
+  explanation?: {
+    retrieved_memories?: QueryRetrievedMemory[];
+    graph_facts?: Array<{ subject: string; predicate: string; object: string; bucket_name?: string }>;
+  };
+  usage?: Record<string, number>;
+  synthesis_usage?: Record<string, number>;
 }
 
 export interface BucketRecord {

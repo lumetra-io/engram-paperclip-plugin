@@ -146,13 +146,14 @@ async function registerTools(ctx: PluginContext): Promise<void> {
                 }),
               ];
         const result = await ready.client.query({ query: payload.question, buckets, k: payload.k });
-        const summary = result.result?.trim();
-        const sourceLines = (result.sources ?? [])
-          .map((s, i) => `[${i + 1}] (${s.score?.toFixed(2) ?? "—"}) ${s.content}`)
+        const answer = result.answer?.trim();
+        const retrieved = result.explanation?.retrieved_memories ?? [];
+        const sourceLines = retrieved
+          .map((m, i) => `[${i + 1}] (${m.raw_score?.toFixed(2) ?? "—"}) ${m.content}`)
           .join("\n");
         return {
-          content: summary
-            ? `${summary}${sourceLines ? `\n\nSources:\n${sourceLines}` : ""}`
+          content: answer
+            ? `${answer}${sourceLines ? `\n\nSources:\n${sourceLines}` : ""}`
             : sourceLines || `No memories found in [${buckets.join(", ")}] for: ${payload.question}`,
           data: result,
         };

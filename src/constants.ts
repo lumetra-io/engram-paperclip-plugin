@@ -1,5 +1,5 @@
 export const PLUGIN_ID = "io.lumetra.engram";
-export const PLUGIN_VERSION = "0.1.1";
+export const PLUGIN_VERSION = "0.1.2";
 
 export const TOOL_NAMES = {
   storeMemory: "store_memory",
