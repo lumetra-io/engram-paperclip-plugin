@@ -25,7 +25,7 @@ export const STATE_KEYS = {
 } as const;
 
 export const DEFAULT_CONFIG = {
-  baseUrl: "https://api.engram.lumetra.io",
+  baseUrl: "https://api.lumetra.io",
   bucketStrategy: "per-company" as const,
   bucketPrefix: "paperclip",
   autoIngestEvents: true,

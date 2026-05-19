@@ -47,7 +47,7 @@ const manifest: PaperclipPluginManifestV1 = {
       baseUrl: {
         type: "string",
         title: "Engram API Base URL",
-        description: "Override for self-hosted Engram. Defaults to Lumetra cloud.",
+        description: "Override for self-hosted Engram. Defaults to https://api.lumetra.io.",
         default: DEFAULT_CONFIG.baseUrl,
       },
       bucketStrategy: {

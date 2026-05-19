@@ -9,8 +9,6 @@ import {
 import {
   DEFAULT_CONFIG,
   PLUGIN_ID,
-  STATE_KEYS,
-  STATE_NAMESPACE,
   TOOL_NAMES,
   type BucketStrategy,
 } from "./constants.js";
@@ -29,45 +27,43 @@ let client: EngramClient | null = null;
 let resolvedConfig: EngramConfig | null = null;
 let currentContext: PluginContext | null = null;
 
-async function loadConfig(ctx: PluginContext): Promise<EngramConfig> {
-  const raw = (await ctx.config.get()) as Partial<EngramConfig> & { apiKey?: string };
+function readConfig(raw: Record<string, unknown> | null | undefined): EngramConfig | null {
   const envKey = process.env.ENGRAM_API_KEY?.trim();
-  const configKey = raw.apiKey?.trim();
-  let apiKey = envKey || configKey;
-  if (!apiKey) {
-    throw new Error(
-      "Engram plugin is not configured: set apiKey in plugin settings or ENGRAM_API_KEY in the server env",
-    );
-  }
-  if (configKey && !envKey) {
-    // If the operator pasted a UUID-style secret ref into the config, try to
-    // resolve it; otherwise treat the string as the literal key.
-    apiKey = await ctx.secrets.resolve(configKey).catch(() => configKey);
-  }
+  const cfg = (raw ?? {}) as Partial<EngramConfig> & { apiKey?: string };
+  const configKey = cfg.apiKey?.trim();
+  const apiKey = envKey || configKey;
+  if (!apiKey) return null;
   return {
     apiKey,
-    baseUrl: raw.baseUrl ?? DEFAULT_CONFIG.baseUrl,
-    bucketStrategy: (raw.bucketStrategy ?? DEFAULT_CONFIG.bucketStrategy) as BucketStrategy,
-    bucketPrefix: raw.bucketPrefix ?? DEFAULT_CONFIG.bucketPrefix,
-    autoIngestEvents: raw.autoIngestEvents ?? DEFAULT_CONFIG.autoIngestEvents,
+    baseUrl: (cfg.baseUrl?.trim() || DEFAULT_CONFIG.baseUrl),
+    bucketStrategy: (cfg.bucketStrategy ?? DEFAULT_CONFIG.bucketStrategy) as BucketStrategy,
+    bucketPrefix: cfg.bucketPrefix ?? DEFAULT_CONFIG.bucketPrefix,
+    autoIngestEvents: cfg.autoIngestEvents ?? DEFAULT_CONFIG.autoIngestEvents,
   };
 }
 
-async function ensureClient(ctx: PluginContext): Promise<{ client: EngramClient; config: EngramConfig }> {
+async function loadConfig(ctx: PluginContext): Promise<EngramConfig | null> {
+  const raw = (await ctx.config.get()) as Record<string, unknown> | null | undefined;
+  return readConfig(raw);
+}
+
+function bindClient(ctx: PluginContext, cfg: EngramConfig): EngramClient {
+  client = new EngramClient({ baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, http: ctx.http });
+  resolvedConfig = cfg;
+  return client;
+}
+
+function ensure(): { client: EngramClient; config: EngramConfig } | { error: string } {
   if (!client || !resolvedConfig) {
-    resolvedConfig = await loadConfig(ctx);
-    client = new EngramClient({
-      baseUrl: resolvedConfig.baseUrl,
-      apiKey: resolvedConfig.apiKey,
-      http: ctx.http,
-    });
+    return { error: "Engram plugin is not configured. Set apiKey in plugin settings or ENGRAM_API_KEY in the server env." };
   }
   return { client, config: resolvedConfig };
 }
 
 function toolError(err: unknown): ToolResult {
   if (err instanceof EngramHttpError) {
-    return { error: `Engram API error ${err.status}: ${err.message}` };
+    const detail = typeof err.body === "string" ? err.body : JSON.stringify(err.body);
+    return { error: `Engram API ${err.status}: ${err.message}${detail ? ` — ${detail.slice(0, 300)}` : ""}` };
   }
   if (err instanceof Error) return { error: err.message };
   return { error: "Unknown error" };
@@ -78,36 +74,37 @@ async function registerTools(ctx: PluginContext): Promise<void> {
     TOOL_NAMES.storeMemory,
     {
       displayName: "Engram: Store Memory",
-      description: "Save an atomic fact to durable memory.",
+      description: "Save an atomic fact to durable Engram memory.",
       parametersSchema: {
         type: "object",
         required: ["content"],
         properties: {
           content: { type: "string" },
           bucket: { type: "string" },
-          tags: { type: "array", items: { type: "string" } },
+          dedup: { type: "string", enum: ["off", "loose", "strict"] },
         },
       },
     },
     async (params, runCtx: ToolRunContext): Promise<ToolResult> => {
+      const ready = ensure();
+      if ("error" in ready) return { error: ready.error };
       try {
-        const { client, config } = await ensureClient(ctx);
-        const payload = params as { content?: string; bucket?: string; tags?: string[] };
+        const payload = params as { content?: string; bucket?: string; dedup?: "off" | "loose" | "strict" };
         if (!payload.content) return { error: "content is required" };
         const bucket = resolveBucket({
-          strategy: config.bucketStrategy,
-          prefix: config.bucketPrefix,
+          strategy: ready.config.bucketStrategy,
+          prefix: ready.config.bucketPrefix,
           runCtx,
           override: payload.bucket,
         });
-        const memory = await client.storeMemory({
+        const memory = await ready.client.storeMemory({
           content: payload.content,
           bucket,
-          tags: payload.tags,
+          dedup: payload.dedup,
         });
         return {
-          content: `Stored memory ${memory.id} in bucket ${bucket}.`,
-          data: { memoryId: memory.id, bucket },
+          content: `Stored memory ${memory.id ?? ""} in bucket ${bucket} (${memory.status ?? "stored"}).`,
+          data: { memoryId: memory.id, bucket, status: memory.status, merge_reason: memory.merge_reason },
         };
       } catch (err) {
         return toolError(err);
@@ -119,40 +116,44 @@ async function registerTools(ctx: PluginContext): Promise<void> {
     TOOL_NAMES.queryMemory,
     {
       displayName: "Engram: Query Memory",
-      description: "Semantic + graph search across stored memory.",
+      description: "Semantic + graph search across stored Engram memory with synthesized answer.",
       parametersSchema: {
         type: "object",
         required: ["question"],
         properties: {
           question: { type: "string" },
           bucket: { type: "string" },
+          buckets: { type: "array", items: { type: "string" } },
           k: { type: "integer", minimum: 1, maximum: 50 },
         },
       },
     },
     async (params, runCtx: ToolRunContext): Promise<ToolResult> => {
+      const ready = ensure();
+      if ("error" in ready) return { error: ready.error };
       try {
-        const { client, config } = await ensureClient(ctx);
-        const payload = params as { question?: string; bucket?: string; k?: number };
+        const payload = params as { question?: string; bucket?: string; buckets?: string[]; k?: number };
         if (!payload.question) return { error: "question is required" };
-        const bucket = resolveBucket({
-          strategy: config.bucketStrategy,
-          prefix: config.bucketPrefix,
-          runCtx,
-          override: payload.bucket,
-        });
-        const result = await client.queryMemory({
-          question: payload.question,
-          bucket,
-          k: payload.k,
-        });
-        const lines = result.memories.map(
-          (m, i) => `[${i + 1}] (${m.score?.toFixed(2) ?? "—"}) ${m.content}`,
-        );
+        const buckets =
+          payload.buckets && payload.buckets.length > 0
+            ? payload.buckets
+            : [
+                resolveBucket({
+                  strategy: ready.config.bucketStrategy,
+                  prefix: ready.config.bucketPrefix,
+                  runCtx,
+                  override: payload.bucket,
+                }),
+              ];
+        const result = await ready.client.query({ query: payload.question, buckets, k: payload.k });
+        const summary = result.result?.trim();
+        const sourceLines = (result.sources ?? [])
+          .map((s, i) => `[${i + 1}] (${s.score?.toFixed(2) ?? "—"}) ${s.content}`)
+          .join("\n");
         return {
-          content: lines.length
-            ? `Top ${lines.length} memories from ${bucket}:\n${lines.join("\n")}`
-            : `No memories found in ${bucket} for: ${payload.question}`,
+          content: summary
+            ? `${summary}${sourceLines ? `\n\nSources:\n${sourceLines}` : ""}`
+            : sourceLines || `No memories found in [${buckets.join(", ")}] for: ${payload.question}`,
           data: result,
         };
       } catch (err) {
@@ -169,12 +170,15 @@ async function registerTools(ctx: PluginContext): Promise<void> {
       parametersSchema: { type: "object", properties: {} },
     },
     async (): Promise<ToolResult> => {
+      const ready = ensure();
+      if ("error" in ready) return { error: ready.error };
       try {
-        const { client } = await ensureClient(ctx);
-        const buckets = await client.listBuckets();
+        const buckets = await ready.client.listBuckets();
         return {
           content: buckets.length
-            ? buckets.map((b) => `${b.name} (${b.memoryCount} memories)`).join("\n")
+            ? buckets
+                .map((b) => `${b.name}${b.memory_count != null ? ` (${b.memory_count} memories)` : ""}`)
+                .join("\n")
             : "No buckets yet.",
           data: { buckets },
         };
@@ -188,7 +192,7 @@ async function registerTools(ctx: PluginContext): Promise<void> {
     TOOL_NAMES.recallRecent,
     {
       displayName: "Engram: Recall Recent",
-      description: "Recent memories in the current bucket.",
+      description: "Recent memories in the current bucket. Use at start of a heartbeat to load 'what was I working on'.",
       parametersSchema: {
         type: "object",
         properties: {
@@ -198,16 +202,17 @@ async function registerTools(ctx: PluginContext): Promise<void> {
       },
     },
     async (params, runCtx: ToolRunContext): Promise<ToolResult> => {
+      const ready = ensure();
+      if ("error" in ready) return { error: ready.error };
       try {
-        const { client, config } = await ensureClient(ctx);
         const payload = params as { limit?: number; bucket?: string };
         const bucket = resolveBucket({
-          strategy: config.bucketStrategy,
-          prefix: config.bucketPrefix,
+          strategy: ready.config.bucketStrategy,
+          prefix: ready.config.bucketPrefix,
           runCtx,
           override: payload.bucket,
         });
-        const memories = await client.recallRecent({ bucket, limit: payload.limit });
+        const memories = await ready.client.listMemories({ bucket, limit: payload.limit });
         return {
           content: memories.length
             ? memories.map((m) => `• ${m.content}`).join("\n")
@@ -225,8 +230,8 @@ async function registerEventIngestion(ctx: PluginContext, config: EngramConfig):
   if (!config.autoIngestEvents) return;
 
   const writeFromEvent = async (event: PluginEvent, summary: string): Promise<void> => {
+    if (!client) return;
     try {
-      const { client } = await ensureClient(ctx);
       const companyId =
         (event as { companyId?: string }).companyId ??
         (event as { entityCompanyId?: string }).entityCompanyId;
@@ -236,11 +241,7 @@ async function registerEventIngestion(ctx: PluginContext, config: EngramConfig):
         prefix: config.bucketPrefix,
         scopeHint: { companyId, projectId },
       });
-      await client.storeMemory({
-        content: summary,
-        bucket,
-        tags: ["paperclip-event", event.eventType ?? "unknown"],
-      });
+      await client.storeMemory({ content: summary, bucket });
     } catch (err) {
       ctx.logger.warn("auto-ingest failed", { error: err instanceof Error ? err.message : err });
     }
@@ -269,27 +270,29 @@ async function registerEventIngestion(ctx: PluginContext, config: EngramConfig):
 
 async function registerWidgetData(ctx: PluginContext): Promise<void> {
   ctx.data.register("engram-stats", async (params): Promise<unknown> => {
-    const { client, config } = await ensureClient(ctx);
+    const ready = ensure();
+    if ("error" in ready) {
+      return { bucket: null, strategy: null, memoryCount: 0, lastWriteAt: null, recent: [], error: ready.error };
+    }
     const companyId = (params as { companyId?: string }).companyId;
     const bucket = resolveBucket({
-      strategy: config.bucketStrategy,
-      prefix: config.bucketPrefix,
+      strategy: ready.config.bucketStrategy,
+      prefix: ready.config.bucketPrefix,
       scopeHint: { companyId },
     });
     try {
-      const stats = await client.bucketStats(bucket);
-      const recent = await client.recallRecent({ bucket, limit: 5 });
+      const recent = await ready.client.listMemories({ bucket, limit: 5 });
       return {
         bucket,
-        strategy: config.bucketStrategy,
-        memoryCount: stats.memoryCount,
-        lastWriteAt: stats.lastWriteAt ?? null,
-        recent: recent.map((m) => ({ id: m.id, content: m.content, createdAt: m.createdAt })),
+        strategy: ready.config.bucketStrategy,
+        memoryCount: recent.length,
+        lastWriteAt: recent[0]?.created_at ?? null,
+        recent: recent.map((m) => ({ id: m.id, content: m.content, createdAt: m.created_at ?? null })),
       };
     } catch (err) {
       return {
         bucket,
-        strategy: config.bucketStrategy,
+        strategy: ready.config.bucketStrategy,
         memoryCount: 0,
         lastWriteAt: null,
         recent: [],
@@ -303,51 +306,34 @@ const plugin = definePlugin({
   async setup(ctx) {
     currentContext = ctx;
     ctx.logger.info(`${PLUGIN_ID} starting up`);
-    let config: EngramConfig;
-    try {
-      config = await loadConfig(ctx);
-    } catch (err) {
-      ctx.logger.warn("Engram plugin not configured yet — tools will return an error until apiKey is set", {
-        error: err instanceof Error ? err.message : err,
+    const config = await loadConfig(ctx);
+    if (config) {
+      bindClient(ctx, config);
+      ctx.logger.info("Engram plugin ready", {
+        baseUrl: config.baseUrl,
+        bucketStrategy: config.bucketStrategy,
+        autoIngest: config.autoIngestEvents,
       });
-      await registerTools(ctx);
-      await registerWidgetData(ctx);
-      return;
+    } else {
+      ctx.logger.warn("Engram plugin not configured yet — tools will return an error until apiKey is set");
     }
-    resolvedConfig = config;
-    client = new EngramClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, http: ctx.http });
     await registerTools(ctx);
-    await registerEventIngestion(ctx, config);
+    if (config) await registerEventIngestion(ctx, config);
     await registerWidgetData(ctx);
-    ctx.logger.info("Engram plugin ready", {
-      baseUrl: config.baseUrl,
-      bucketStrategy: config.bucketStrategy,
-      autoIngest: config.autoIngestEvents,
-    });
   },
 
   async onValidateConfig(config) {
     const ctx = currentContext;
     if (!ctx) return { ok: false, errors: ["Plugin not initialized"] };
+    const cfg = readConfig(config as Record<string, unknown>);
+    if (!cfg) {
+      return {
+        ok: false,
+        errors: ["apiKey is required (or set ENGRAM_API_KEY in the server env)"],
+      };
+    }
     try {
-      const raw = config as Partial<EngramConfig> & { apiKey?: string };
-      const envKey = process.env.ENGRAM_API_KEY?.trim();
-      const configKey = raw.apiKey?.trim();
-      let apiKey = envKey || configKey;
-      if (!apiKey) {
-        return {
-          ok: false,
-          errors: ["apiKey is required (or set ENGRAM_API_KEY in the server env)"],
-        };
-      }
-      if (configKey && !envKey) {
-        apiKey = await ctx.secrets.resolve(configKey).catch(() => configKey);
-      }
-      const probe = new EngramClient({
-        baseUrl: raw.baseUrl ?? DEFAULT_CONFIG.baseUrl,
-        apiKey,
-        http: ctx.http,
-      });
+      const probe = new EngramClient({ baseUrl: cfg.baseUrl, apiKey: cfg.apiKey, http: ctx.http });
       await probe.listBuckets();
       return { ok: true };
     } catch (err) {
@@ -358,18 +344,17 @@ const plugin = definePlugin({
     }
   },
 
-  async onConfigChanged(_newConfig) {
+  async onConfigChanged(newConfig) {
     const ctx = currentContext;
     client = null;
     resolvedConfig = null;
     if (!ctx) return;
-    try {
-      const config = await loadConfig(ctx);
-      resolvedConfig = config;
-      client = new EngramClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, http: ctx.http });
-      ctx.logger.info("Engram config reloaded");
-    } catch (err) {
-      ctx.logger.warn("Engram config invalid", { error: err instanceof Error ? err.message : err });
+    const cfg = readConfig(newConfig);
+    if (cfg) {
+      bindClient(ctx, cfg);
+      ctx.logger.info("Engram config reloaded", { baseUrl: cfg.baseUrl });
+    } else {
+      ctx.logger.warn("Engram config invalid after reload — apiKey missing");
     }
   },
 
@@ -391,7 +376,3 @@ const plugin = definePlugin({
 
 export default plugin;
 runWorker(plugin, import.meta.url);
-
-// Touch unused exports so the bundler keeps them readable in source.
-void STATE_KEYS;
-void STATE_NAMESPACE;
