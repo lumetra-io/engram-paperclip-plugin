@@ -26,7 +26,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@paperclipai/plugin-sdk": "^1.0.0"
+    "@paperclipai/plugin-sdk": "link:../paperclip/packages/plugins/sdk"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",

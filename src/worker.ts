@@ -27,6 +27,7 @@ interface EngramConfig {
 
 let client: EngramClient | null = null;
 let resolvedConfig: EngramConfig | null = null;
+let currentContext: PluginContext | null = null;
 
 async function loadConfig(ctx: PluginContext): Promise<EngramConfig> {
   const raw = (await ctx.config.get()) as Partial<EngramConfig> & { apiKey?: string };
@@ -229,7 +230,7 @@ async function registerEventIngestion(ctx: PluginContext, config: EngramConfig):
       await client.storeMemory({
         content: summary,
         bucket,
-        tags: ["paperclip-event", event.type ?? "unknown"],
+        tags: ["paperclip-event", event.eventType ?? "unknown"],
       });
     } catch (err) {
       ctx.logger.warn("auto-ingest failed", { error: err instanceof Error ? err.message : err });
@@ -291,6 +292,7 @@ async function registerWidgetData(ctx: PluginContext): Promise<void> {
 
 const plugin = definePlugin({
   async setup(ctx) {
+    currentContext = ctx;
     ctx.logger.info(`${PLUGIN_ID} starting up`);
     let config: EngramConfig;
     try {
@@ -315,10 +317,18 @@ const plugin = definePlugin({
     });
   },
 
-  async validateConfig(ctx) {
+  async onValidateConfig(config) {
+    const ctx = currentContext;
+    if (!ctx) return { ok: false, errors: ["Plugin not initialized"] };
     try {
-      const config = await loadConfig(ctx);
-      const probe = new EngramClient({ baseUrl: config.baseUrl, apiKey: config.apiKey, http: ctx.http });
+      const raw = config as Partial<EngramConfig> & { apiKey?: string };
+      if (!raw.apiKey) return { ok: false, errors: ["apiKey is required"] };
+      const apiKey = await ctx.secrets.resolve(raw.apiKey).catch(() => raw.apiKey!);
+      const probe = new EngramClient({
+        baseUrl: raw.baseUrl ?? DEFAULT_CONFIG.baseUrl,
+        apiKey,
+        http: ctx.http,
+      });
       await probe.listBuckets();
       return { ok: true };
     } catch (err) {
@@ -329,9 +339,11 @@ const plugin = definePlugin({
     }
   },
 
-  async configChanged(ctx) {
+  async onConfigChanged(_newConfig) {
+    const ctx = currentContext;
     client = null;
     resolvedConfig = null;
+    if (!ctx) return;
     try {
       const config = await loadConfig(ctx);
       resolvedConfig = config;
