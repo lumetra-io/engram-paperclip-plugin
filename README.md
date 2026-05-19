@@ -23,7 +23,7 @@ When `autoIngestEvents` is enabled, the plugin subscribes to Paperclip's domain 
 
 ## Configuration
 
-Configured via the auto-generated settings form at `/settings/plugins/io.lumetra.engram`:
+Configured via the auto-generated settings form at `/instance/settings/plugins/io.lumetra.engram`:
 
 | Field | Default | Notes |
 | --- | --- | --- |
