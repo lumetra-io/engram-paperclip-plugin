@@ -226,19 +226,20 @@ async function registerTools(ctx: PluginContext): Promise<void> {
   );
 }
 
-async function registerEventIngestion(ctx: PluginContext, config: EngramConfig): Promise<void> {
-  if (!config.autoIngestEvents) return;
-
+async function registerEventIngestion(ctx: PluginContext): Promise<void> {
+  // Subscriptions are registered once at setup() and remain live even before
+  // the plugin is configured. Each handler reads the current resolvedConfig at
+  // dispatch time so a later config save activates ingestion without restart.
   const writeFromEvent = async (event: PluginEvent, summary: string): Promise<void> => {
-    if (!client) return;
+    if (!client || !resolvedConfig || !resolvedConfig.autoIngestEvents) return;
     try {
       const companyId =
         (event as { companyId?: string }).companyId ??
         (event as { entityCompanyId?: string }).entityCompanyId;
       const projectId = (event as { projectId?: string }).projectId;
       const bucket = resolveBucket({
-        strategy: config.bucketStrategy,
-        prefix: config.bucketPrefix,
+        strategy: resolvedConfig.bucketStrategy,
+        prefix: resolvedConfig.bucketPrefix,
         scopeHint: { companyId, projectId },
       });
       await client.storeMemory({ content: summary, bucket });
@@ -318,7 +319,7 @@ const plugin = definePlugin({
       ctx.logger.warn("Engram plugin not configured yet — tools will return an error until apiKey is set");
     }
     await registerTools(ctx);
-    if (config) await registerEventIngestion(ctx, config);
+    await registerEventIngestion(ctx);
     await registerWidgetData(ctx);
   },
 
