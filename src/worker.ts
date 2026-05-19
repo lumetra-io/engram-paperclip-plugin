@@ -31,10 +31,19 @@ let currentContext: PluginContext | null = null;
 
 async function loadConfig(ctx: PluginContext): Promise<EngramConfig> {
   const raw = (await ctx.config.get()) as Partial<EngramConfig> & { apiKey?: string };
-  if (!raw.apiKey) {
-    throw new Error("Engram plugin is not configured: apiKey is required");
+  const envKey = process.env.ENGRAM_API_KEY?.trim();
+  const configKey = raw.apiKey?.trim();
+  let apiKey = envKey || configKey;
+  if (!apiKey) {
+    throw new Error(
+      "Engram plugin is not configured: set apiKey in plugin settings or ENGRAM_API_KEY in the server env",
+    );
   }
-  const apiKey = await ctx.secrets.resolve(raw.apiKey).catch(() => raw.apiKey!);
+  if (configKey && !envKey) {
+    // If the operator pasted a UUID-style secret ref into the config, try to
+    // resolve it; otherwise treat the string as the literal key.
+    apiKey = await ctx.secrets.resolve(configKey).catch(() => configKey);
+  }
   return {
     apiKey,
     baseUrl: raw.baseUrl ?? DEFAULT_CONFIG.baseUrl,
@@ -322,8 +331,18 @@ const plugin = definePlugin({
     if (!ctx) return { ok: false, errors: ["Plugin not initialized"] };
     try {
       const raw = config as Partial<EngramConfig> & { apiKey?: string };
-      if (!raw.apiKey) return { ok: false, errors: ["apiKey is required"] };
-      const apiKey = await ctx.secrets.resolve(raw.apiKey).catch(() => raw.apiKey!);
+      const envKey = process.env.ENGRAM_API_KEY?.trim();
+      const configKey = raw.apiKey?.trim();
+      let apiKey = envKey || configKey;
+      if (!apiKey) {
+        return {
+          ok: false,
+          errors: ["apiKey is required (or set ENGRAM_API_KEY in the server env)"],
+        };
+      }
+      if (configKey && !envKey) {
+        apiKey = await ctx.secrets.resolve(configKey).catch(() => configKey);
+      }
       const probe = new EngramClient({
         baseUrl: raw.baseUrl ?? DEFAULT_CONFIG.baseUrl,
         apiKey,

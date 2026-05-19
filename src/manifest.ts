@@ -21,12 +21,15 @@ const manifest: PaperclipPluginManifestV1 = {
     "agent.tools.register",
     "events.subscribe",
     "http.outbound",
-    "secrets.read-ref",
     "plugin.state.read",
     "plugin.state.write",
     "instance.settings.register",
     "ui.dashboardWidget.register",
     "activity.log.write",
+    // "secrets.read-ref" — re-add once company-scoped plugin config / secret-ref
+    // inputs are enabled in the host. The worker also gracefully falls back to
+    // the raw config value, so keeping this off means one fewer capability gate
+    // to approve.
   ],
   entrypoints: {
     worker: "./dist/worker.js",
@@ -34,13 +37,12 @@ const manifest: PaperclipPluginManifestV1 = {
   },
   instanceConfigSchema: {
     type: "object",
-    required: ["apiKey"],
     properties: {
       apiKey: {
         type: "string",
         title: "Engram API Key",
-        description: "Your Lumetra/Engram API key. Stored as a secret reference.",
-        format: "secret-ref",
+        description:
+          "Your Lumetra/Engram API key. Stored in plugin config (plaintext, instance-scoped). Leave blank and set ENGRAM_API_KEY in the server env instead if you'd rather not persist it.",
       },
       baseUrl: {
         type: "string",
