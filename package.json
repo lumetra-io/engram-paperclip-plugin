@@ -11,8 +11,19 @@
   },
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
   },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
   "paperclipPlugin": {
     "manifest": "./dist/manifest.js",
     "worker": "./dist/worker.js",
@@ -26,7 +37,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@paperclipai/plugin-sdk": "link:../paperclip/packages/plugins/sdk"
+    "@paperclipai/plugin-sdk": "^2026.517.0"
   },
   "devDependencies": {
     "@types/node": "^24.6.0",
