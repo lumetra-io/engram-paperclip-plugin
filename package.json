@@ -1,0 +1,41 @@
+{
+  "name": "@lumetra/engram-paperclip-plugin",
+  "version": "0.1.0",
+  "description": "Engram durable memory for Paperclip agents — store and recall facts across heartbeats, runs, and companies.",
+  "license": "MIT",
+  "author": "Lumetra <hello@lumetra.io>",
+  "homepage": "https://lumetra.io",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/lumetra/engram-paperclip-plugin"
+  },
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "paperclipPlugin": {
+    "manifest": "./dist/manifest.js",
+    "worker": "./dist/worker.js",
+    "ui": "./dist/ui/"
+  },
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paperclipai/plugin-sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.6.0",
+    "@types/react": "^19.0.8",
+    "react": "^19.0.0",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  }
+}
