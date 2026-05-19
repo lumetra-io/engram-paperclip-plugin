@@ -36,6 +36,8 @@ export class EngramHttpError extends Error {
 }
 
 export class EngramClient {
+  private readonly knownBuckets = new Set<string>();
+
   constructor(private readonly opts: EngramClientOptions) {}
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -67,15 +69,37 @@ export class EngramClient {
   }
 
   async createBucket(name: string): Promise<BucketRecord> {
-    return this.request<BucketRecord>("POST", "/v1/buckets", { name });
+    const result = await this.request<BucketRecord>("POST", "/v1/buckets", { name });
+    this.knownBuckets.add(name);
+    return result;
   }
 
+  /**
+   * POST a memory; on a 404-bucket-not-found we transparently create the
+   * bucket and retry once. Successful bucket names are cached so subsequent
+   * stores skip the existence check entirely.
+   */
   async storeMemory(input: { content: string; bucket: string; dedup?: "off" | "loose" | "strict" }): Promise<StoredMemory> {
-    return this.request<StoredMemory>(
-      "POST",
-      `/v1/buckets/${encodeURIComponent(input.bucket)}/memories`,
-      { content: input.content, ...(input.dedup ? { dedup: input.dedup } : {}) },
-    );
+    const path = `/v1/buckets/${encodeURIComponent(input.bucket)}/memories`;
+    const body = { content: input.content, ...(input.dedup ? { dedup: input.dedup } : {}) };
+    try {
+      const result = await this.request<StoredMemory>("POST", path, body);
+      this.knownBuckets.add(input.bucket);
+      return result;
+    } catch (err) {
+      if (!this.knownBuckets.has(input.bucket) && isMissingBucketError(err)) {
+        try {
+          await this.createBucket(input.bucket);
+        } catch (createErr) {
+          // Concurrent create: ignore conflict, fall through to retry.
+          if (!isConflictError(createErr)) throw createErr;
+          this.knownBuckets.add(input.bucket);
+        }
+        const retried = await this.request<StoredMemory>("POST", path, body);
+        return retried;
+      }
+      throw err;
+    }
   }
 
   async listMemories(input: { bucket: string; limit?: number }): Promise<StoredMemory[]> {
@@ -105,4 +129,19 @@ function safeJson(text: string): unknown {
   } catch {
     return text;
   }
+}
+
+export function isMissingBucketError(err: unknown): err is EngramHttpError {
+  if (!(err instanceof EngramHttpError)) return false;
+  if (err.status === 404) return true;
+  const body = err.body;
+  if (body && typeof body === "object" && "error" in body) {
+    const msg = String((body as { error: unknown }).error).toLowerCase();
+    return msg.includes("bucket not found") || msg.includes("no such bucket");
+  }
+  return false;
+}
+
+export function isConflictError(err: unknown): err is EngramHttpError {
+  return err instanceof EngramHttpError && (err.status === 409 || err.status === 422);
 }
